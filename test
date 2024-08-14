@@ -1,0 +1,46 @@
+# Define variables
+$JiraBaseURL = "https://your-jira-instance.atlassian.net"  # Replace with your Jira base URL
+$Username = "your-username"  # Replace with your Jira username
+$ApiToken = "your-api-token"  # Replace with your Jira API token
+$NoncompliantProjects = @("PROJECT1", "PROJECT2")  # List of Jira project keys
+$ReadOnlyPermissionSchemeId = 10001  # Replace with the ID of your read-only permission scheme
+$OriginalPermissionSchemeId = 10000  # Replace with the ID of the original permission scheme
+
+# Convert credentials to Base64
+$AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($Username):$($ApiToken)"))
+
+# Function to switch permission scheme for a Jira project
+function Set-JiraProjectPermissionScheme {
+    param (
+        [string]$ProjectKey,
+        [int]$PermissionSchemeId
+    )
+
+    $Uri = "$JiraBaseURL/rest/api/2/project/$ProjectKey/permissionscheme"
+    $Body = @{
+        id = $PermissionSchemeId
+    } | ConvertTo-Json
+
+    $Headers = @{
+        Authorization = "Basic $AuthInfo"
+        Content-Type  = "application/json"
+    }
+
+    try {
+        Invoke-RestMethod -Uri $Uri -Method PUT -Headers $Headers -Body $Body
+        Write-Host "Successfully updated permission scheme for project $ProjectKey to scheme ID $PermissionSchemeId."
+    } catch {
+        Write-Host "Failed to update permission scheme for project $ProjectKey. Error: $_"
+    }
+}
+
+# Step 1: Set noncompliant projects to read-only
+foreach ($project in $NoncompliantProjects) {
+    Set-JiraProjectPermissionScheme -ProjectKey $project -PermissionSchemeId $ReadOnlyPermissionSchemeId
+}
+
+# ----- Run the following step to restore the original permissions -----
+# Step 2: Restore original permissions (Uncomment and run when needed)
+# foreach ($project in $NoncompliantProjects) {
+#     Set-JiraProjectPermissionScheme -ProjectKey $project -PermissionSchemeId $OriginalPermissionSchemeId
+# }
