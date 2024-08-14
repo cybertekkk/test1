@@ -3,11 +3,11 @@
 
 # Define variables
 $JiraBaseURL = "https://your-jira-instance.atlassian.net"
-$Username = "your-username"
-$ApiToken = "your-api-token"
+$Username = "your-username"  # Replace with your Jira username (usually your email)
+$ApiToken = "your-api-token"  # Replace with a valid Jira API token
 $NoncompliantProjects = @("PROJECT1", "PROJECT2")
-$ReadOnlyPermissionSchemeId = 10001
-$OriginalPermissionSchemeId = 10000
+$ReadOnlyPermissionSchemeId = 10001  # Replace with your Read-Only Permission Scheme ID
+$OriginalPermissionSchemeId = 10000  # Replace with your Original Permission Scheme ID
 
 # Convert credentials to Base64
 $AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($Username):$($ApiToken)"))
@@ -29,15 +29,20 @@ function Set-JiraProjectPermissionScheme {
         "Content-Type"  = "application/json"
     }
 
-    # Set timeout and other connection properties
-    [System.Net.ServicePointManager]::FindServicePoint($Uri).ConnectionLeaseTimeout = 60000  # 60 seconds
-    [System.Net.ServicePointManager]::FindServicePoint($Uri).Expect100Continue = $false
-
+    Write-Host "Sending request to $Uri..."
+    
     try {
-        Invoke-RestMethod -Uri $Uri -Method PUT -Headers $Headers -Body $Body
+        $response = Invoke-RestMethod -Uri $Uri -Method PUT -Headers $Headers -Body $Body -ErrorAction Stop
         Write-Host "Successfully updated permission scheme for project $ProjectKey to scheme ID $PermissionSchemeId."
     } catch {
         Write-Host "Failed to update permission scheme for project $ProjectKey. Error: $_"
+        if ($_.Exception.Response) {
+            $respStream = $_.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($respStream)
+            $reader.BaseStream.Position = 0
+            $responseBody = $reader.ReadToEnd()
+            Write-Host "Response from server: $responseBody"
+        }
     }
 }
 
