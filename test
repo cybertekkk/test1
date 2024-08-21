@@ -46,8 +46,8 @@ foreach ($group in $topLevelGroups) {
     Process-TopLevelGroup -groupName $group
 }
 
-# Export the results to an Excel file
-$excelFilePath = "C:\path\to\your\directory\AD_User_Extract.xlsx"
-$userList | Export-Excel -Path $excelFilePath -AutoSize -Title "AD User Extract"
+# Export the results to a CSV file
+$csvFilePath = "C:\path\to\your\directory\AD_User_Extract.csv"
+$userList | Export-Csv -Path $csvFilePath -NoTypeInformation -Encoding UTF8
 
-Write-Host "The Excel file has been created at: $excelFilePath"
+Write-Host "The CSV file has been created at: $csvFilePath"th"
