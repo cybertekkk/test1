@@ -1,58 +1,53 @@
-# Set TLS version
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# Import the required modules
+Import-Module ActiveDirectory
+Import-Module ImportExcel
 
-# Define variables
-$JiraBaseURL = "https://your-jira-instance.atlassian.net"
-$Username = "your-username"  # Replace with your Jira username (usually your email)
-$ApiToken = "your-api-token"  # Replace with a valid Jira API token
-$NoncompliantProjects = @("PROJECT1", "PROJECT2")
-$ReadOnlyPermissionSchemeId = 10001  # Replace with your Read-Only Permission Scheme ID
-$OriginalPermissionSchemeId = 10000  # Replace with your Original Permission Scheme ID
+# Define the top-level groups
+$topLevelGroups = @("SDT_LIC_EXT_GEN", "SDT_LIC_EXT_DEV")
 
-# Convert credentials to Base64
-$AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($Username):$($ApiToken)"))
+# Prepare a list to store the extracted information
+$userList = @()
 
-# Function to switch permission scheme for a Jira project
-function Set-JiraProjectPermissionScheme {
+# Function to process each top-level group
+function Process-TopLevelGroup {
     param (
-        [string]$ProjectKey,
-        [int]$PermissionSchemeId
+        [string]$groupName
     )
-
-    $Uri = "$JiraBaseURL/rest/api/2/project/$ProjectKey/permissionscheme"
-    $Body = @{
-        id = $PermissionSchemeId
-    } | ConvertTo-Json
-
-    $Headers = @{
-        Authorization = "Basic $AuthInfo"
-        "Content-Type"  = "application/json"
-    }
-
-    Write-Host "Sending request to $Uri..."
     
-    try {
-        $response = Invoke-RestMethod -Uri $Uri -Method PUT -Headers $Headers -Body $Body -ErrorAction Stop
-        Write-Host "Successfully updated permission scheme for project $ProjectKey to scheme ID $PermissionSchemeId."
-    } catch {
-        Write-Host "Failed to update permission scheme for project $ProjectKey. Error: $_"
-        if ($_.Exception.Response) {
-            $respStream = $_.Exception.Response.GetResponseStream()
-            $reader = New-Object System.IO.StreamReader($respStream)
-            $reader.BaseStream.Position = 0
-            $responseBody = $reader.ReadToEnd()
-            Write-Host "Response from server: $responseBody"
+    # Get all nested groups underneath the top-level group
+    $nestedGroups = Get-ADGroup -Identity $groupName -Properties Member | Select-Object -ExpandProperty Member | ForEach-Object {
+        Get-ADGroup -Identity $_ -Properties Name | Where-Object { $_.Name -like "SDT_LIC_EXT_*_user" }
+    }
+    
+    # Process each nested group
+    foreach ($group in $nestedGroups) {
+        $program = $group.Name -replace "SDT_LIC_EXT_(GEN|DEV)_", "" -replace "_user", ""
+        
+        # Get all users in the nested group
+        $users = Get-ADGroupMember -Identity $group.DistinguishedName | Where-Object { $_.objectClass -eq "user" }
+        
+        foreach ($user in $users) {
+            # Get detailed user information
+            $userDetails = Get-ADUser -Identity $user.SamAccountName -Properties EmailAddress
+            
+            # Create an entry for each user
+            $userList += [PSCustomObject]@{
+                Program = $program
+                User = $userDetails.SamAccountName
+                Email = $userDetails.EmailAddress
+                ID = $userDetails.ObjectGUID
+            }
         }
     }
 }
 
-# Step 1: Set noncompliant projects to read-only
-foreach ($project in $NoncompliantProjects) {
-    Set-JiraProjectPermissionScheme -ProjectKey $project -PermissionSchemeId $ReadOnlyPermissionSchemeId
+# Process each top-level group
+foreach ($group in $topLevelGroups) {
+    Process-TopLevelGroup -groupName $group
 }
 
-# ----- Run the following step to restore the original permissions -----
-# Step 2: Restore original permissions (Uncomment and run when needed)
-# foreach ($project in $NoncompliantProjects) {
-#     Set-JiraProjectPermissionScheme -ProjectKey $project -PermissionSchemeId $OriginalPermissionSchemeId
-# }
+# Export the results to an Excel file
+$excelFilePath = "C:\path\to\your\directory\AD_User_Extract.xlsx"
+$userList | Export-Excel -Path $excelFilePath -AutoSize -Title "AD User Extract"
+
+Write-Host "The Excel file has been created at: $excelFilePath"
