@@ -1,6 +1,5 @@
-# Import the required modules
+# Import the required Active Directory module
 Import-Module ActiveDirectory
-Import-Module ImportExcel
 
 # Define the top-level groups
 $topLevelGroups = @("SDT_LIC_EXT_GEN", "SDT_LIC_EXT_DEV")
@@ -14,22 +13,43 @@ function Process-TopLevelGroup {
         [string]$groupName
     )
     
-    # Get all nested groups underneath the top-level group
-    $nestedGroups = Get-ADGroup -Identity $groupName -Properties Member | Select-Object -ExpandProperty Member | ForEach-Object {
-        Get-ADGroup -Identity $_ -Properties Name | Where-Object { $_.Name -like "SDT_LIC_EXT_*_user" }
+    # Get the top-level group and check if it exists
+    $group = Get-ADGroup -Identity $groupName -ErrorAction SilentlyContinue
+    if ($null -eq $group) {
+        Write-Host "The group $groupName does not exist or cannot be found." -ForegroundColor Red
+        return
     }
-    
+
+    # Get all nested groups underneath the top-level group
+    $nestedGroups = Get-ADGroup -Identity $groupName -Properties Member | Select-Object -ExpandProperty Member -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-ADGroup -Identity $_ -Properties Name -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "SDT_LIC_EXT_*_user" }
+    }
+
     # Process each nested group
     foreach ($group in $nestedGroups) {
+        if ($null -eq $group) {
+            Write-Host "A nested group could not be found or accessed." -ForegroundColor Yellow
+            continue
+        }
+
         $program = $group.Name -replace "SDT_LIC_EXT_(GEN|DEV)_", "" -replace "_user", ""
         
         # Get all users in the nested group
-        $users = Get-ADGroupMember -Identity $group.DistinguishedName | Where-Object { $_.objectClass -eq "user" }
+        $users = Get-ADGroupMember -Identity $group.DistinguishedName -ErrorAction SilentlyContinue | Where-Object { $_.objectClass -eq "user" }
         
         foreach ($user in $users) {
+            if ($null -eq $user) {
+                Write-Host "A user could not be found or accessed in group $($group.Name)." -ForegroundColor Yellow
+                continue
+            }
+
             # Get detailed user information
-            $userDetails = Get-ADUser -Identity $user.SamAccountName -Properties EmailAddress
-            
+            $userDetails = Get-ADUser -Identity $user.SamAccountName -Properties EmailAddress -ErrorAction SilentlyContinue
+            if ($null -eq $userDetails) {
+                Write-Host "Could not retrieve details for user $($user.SamAccountName)." -ForegroundColor Yellow
+                continue
+            }
+
             # Create an entry for each user
             $userList += [PSCustomObject]@{
                 Program = $program
@@ -50,4 +70,4 @@ foreach ($group in $topLevelGroups) {
 $csvFilePath = "C:\path\to\your\directory\AD_User_Extract.csv"
 $userList | Export-Csv -Path $csvFilePath -NoTypeInformation -Encoding UTF8
 
-Write-Host "The CSV file has been created at: $csvFilePath"th"
+Write-Host "The CSV file has been created at: $csvFilePath"
