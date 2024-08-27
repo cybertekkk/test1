@@ -13,38 +13,56 @@ function Process-Group {
         [string]$groupName
     )
     
-    # Get the group and check if it exists
-    $group = Get-ADGroup -Identity $groupName -ErrorAction SilentlyContinue
-    if ($null -eq $group) {
-        Write-Host "The group $groupName does not exist or cannot be found." -ForegroundColor Red
+    # Try to get the group and handle cases where it doesn't exist
+    try {
+        $group = Get-ADGroup -Identity $groupName -ErrorAction Stop
+    } catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+        Write-Host "Error: The group $groupName cannot be found." -ForegroundColor Red
+        return
+    } catch {
+        Write-Host "Error: An unexpected error occurred while retrieving the group $groupName." -ForegroundColor Red
         return
     }
 
-    # Get all nested groups underneath the top-level group
-    $nestedGroups = Get-ADGroup -Identity $groupName -Properties Member | Select-Object -ExpandProperty Member -ErrorAction SilentlyContinue | ForEach-Object {
-        Get-ADGroup -Identity $_ -Properties Name -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "SDT_LIC_EXT_GEN_*" }
+    # Attempt to retrieve all nested groups
+    try {
+        $nestedGroups = Get-ADGroup -Identity $groupName -Properties Member | Select-Object -ExpandProperty Member -ErrorAction Stop | ForEach-Object {
+            Get-ADGroup -Identity $_ -Properties Name -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "SDT_LIC_EXT_GEN_*" }
+        }
+    } catch {
+        Write-Host "Error: Failed to retrieve nested groups under $groupName." -ForegroundColor Yellow
+        return
     }
 
     # Process each nested group
     foreach ($nestedGroup in $nestedGroups) {
         if ($null -eq $nestedGroup) {
-            Write-Host "A nested group could not be found or accessed." -ForegroundColor Yellow
+            Write-Host "Warning: A nested group could not be found or accessed." -ForegroundColor Yellow
             continue
         }
 
         # Get all users in the nested group
-        $users = Get-ADGroupMember -Identity $nestedGroup.DistinguishedName -ErrorAction SilentlyContinue | Where-Object { $_.objectClass -eq "user" }
+        try {
+            $users = Get-ADGroupMember -Identity $nestedGroup.DistinguishedName -ErrorAction Stop | Where-Object { $_.objectClass -eq "user" }
+        } catch {
+            Write-Host "Warning: Could not retrieve users for group $($nestedGroup.Name)." -ForegroundColor Yellow
+            continue
+        }
         
         foreach ($user in $users) {
             if ($null -eq $user) {
-                Write-Host "A user could not be found or accessed in group $($nestedGroup.Name)." -ForegroundColor Yellow
+                Write-Host "Warning: A user could not be found or accessed in group $($nestedGroup.Name)." -ForegroundColor Yellow
                 continue
             }
 
-            # Get detailed user information
-            $userDetails = Get-ADUser -Identity $user.SamAccountName -Properties EmailAddress -ErrorAction SilentlyContinue
-            if ($null -eq $userDetails) {
-                Write-Host "Could not retrieve details for user $($user.SamAccountName)." -ForegroundColor Yellow
+            # Verify that the user exists before attempting to get details
+            try {
+                $userDetails = Get-ADUser -Identity $user.SamAccountName -Properties EmailAddress -ErrorAction Stop
+            } catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+                Write-Host "Warning: The user $($user.SamAccountName) cannot be found in the domain." -ForegroundColor Yellow
+                continue
+            } catch {
+                Write-Host "Warning: An unexpected error occurred while retrieving details for user $($user.SamAccountName)." -ForegroundColor Yellow
                 continue
             }
 
