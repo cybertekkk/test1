@@ -1,87 +1,85 @@
-# Import the required Active Directory module
-Import-Module ActiveDirectory
+# Define Jira credentials and base URL
+$JiraBaseUrl = "https://your-jira-instance.atlassian.net"
+$JiraUsername = "your.email@example.com"
+$JiraApiToken = "your_api_token"  # Replace with your actual API token
 
-# Define the top-level group
-$topLevelGroup = "SDT_LIC_EXT_GEN"
+# Encode credentials for Basic Auth
+$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$JiraUsername:$JiraApiToken"))
 
-# Prepare a list to store the extracted information
-$userList = New-Object System.Collections.Generic.List[Object]
-
-# Function to process a group and its members
-function Process-Group {
+# Function to send GET requests to Jira
+function Invoke-JiraGet {
     param (
-        [string]$groupName
+        [string]$Uri
     )
-    
-    # Try to get the group and handle cases where it doesn't exist
-    try {
-        $group = Get-ADGroup -Identity $groupName -ErrorAction Stop
-    } catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
-        Write-Host "Error: The group $groupName cannot be found." -ForegroundColor Red
-        return
-    } catch {
-        Write-Host "Error: An unexpected error occurred while retrieving the group $groupName." -ForegroundColor Red
-        return
+    $response = Invoke-RestMethod -Uri $Uri -Method Get -Headers @{
+        Authorization = "Basic $base64AuthInfo"
+        Accept        = "application/json"
+    }
+    return $response
+}
+
+# Function to send DELETE requests to Jira
+function Invoke-JiraDelete {
+    param (
+        [string]$Uri
+    )
+    $response = Invoke-RestMethod -Uri $Uri -Method Delete -Headers @{
+        Authorization = "Basic $base64AuthInfo"
+        Accept        = "application/json"
+    }
+    return $response
+}
+
+# Get all workflows in the Jira instance
+$workflowsUri = "$JiraBaseUrl/rest/api/3/workflow"
+$workflows = Invoke-JiraGet -Uri $workflowsUri
+
+# Get all workflow schemes in the Jira instance
+$workflowSchemesUri = "$JiraBaseUrl/rest/api/3/workflowscheme"
+$workflowSchemes = Invoke-JiraGet -Uri $workflowSchemesUri
+
+$unusedWorkflows = @()
+
+# Iterate through the workflows to identify unused ones
+foreach ($workflow in $workflows) {
+    $workflowId = $workflow.id
+    $workflowName = $workflow.name
+    $isUsed = $false
+
+    # Check if the workflow is associated with any workflow schemes
+    foreach ($scheme in $workflowSchemes.values) {
+        if ($scheme.workflows | Where-Object { $_.workflowName -eq $workflowName }) {
+            $isUsed = $true
+            break
+        }
     }
 
-    # Attempt to retrieve all nested groups
-    try {
-        $nestedGroups = Get-ADGroup -Identity $groupName -Properties Member | Select-Object -ExpandProperty Member -ErrorAction Stop | ForEach-Object {
-            Get-ADGroup -Identity $_ -Properties Name -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "SDT_LIC_EXT_GEN_*" }
-        }
-    } catch {
-        Write-Host "Error: Failed to retrieve nested groups under $groupName." -ForegroundColor Yellow
-        return
-    }
-
-    # Process each nested group
-    foreach ($nestedGroup in $nestedGroups) {
-        if ($null -eq $nestedGroup) {
-            Write-Host "Warning: A nested group could not be found or accessed." -ForegroundColor Yellow
-            continue
-        }
-
-        # Get all users in the nested group
-        try {
-            $users = Get-ADGroupMember -Identity $nestedGroup.DistinguishedName -ErrorAction Stop | Where-Object { $_.objectClass -eq "user" }
-        } catch {
-            Write-Host "Warning: Could not retrieve users for group $($nestedGroup.Name)." -ForegroundColor Yellow
-            continue
-        }
-        
-        foreach ($user in $users) {
-            if ($null -eq $user) {
-                Write-Host "Warning: A user could not be found or accessed in group $($nestedGroup.Name)." -ForegroundColor Yellow
-                continue
-            }
-
-            # Verify that the user exists before attempting to get details
-            try {
-                $userDetails = Get-ADUser -Identity $user.SamAccountName -Properties EmailAddress -ErrorAction Stop
-            } catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
-                Write-Host "Warning: The user $($user.SamAccountName) cannot be found in the domain." -ForegroundColor Yellow
-                continue
-            } catch {
-                Write-Host "Warning: An unexpected error occurred while retrieving details for user $($user.SamAccountName)." -ForegroundColor Yellow
-                continue
-            }
-
-            # Create an entry for each user and add to the list
-            $userList.Add([PSCustomObject]@{
-                Group = $nestedGroup.Name
-                User = $userDetails.SamAccountName
-                Email = $userDetails.EmailAddress
-                ID = $userDetails.ObjectGUID
-            })
+    if (-not $isUsed) {
+        $unusedWorkflows += [PSCustomObject]@{
+            WorkflowId = $workflowId
+            WorkflowName = $workflowName
         }
     }
 }
 
-# Process the top-level group
-Process-Group -groupName $topLevelGroup
+# Display unused workflows for review
+if ($unusedWorkflows.Count -gt 0) {
+    Write-Host "The following workflows are unused and can be removed:"
+    $unusedWorkflows | ForEach-Object {
+        Write-Host "$($_.WorkflowId) - $($_.WorkflowName)"
+    }
 
-# Export the results to a CSV file, grouping users by their groups
-$csvFilePath = "C:\path\to\your\directory\AD_User_Extract.csv"
-$userList | Sort-Object Group | Export-Csv -Path $csvFilePath -NoTypeInformation -Encoding UTF8
-
-Write-Host "The CSV file has been created at: $csvFilePath"
+    $confirmation = Read-Host "Do you want to delete these workflows? (yes/no)"
+    if ($confirmation -eq "yes") {
+        foreach ($workflow in $unusedWorkflows) {
+            Write-Host "Deleting workflow: $($workflow.WorkflowName)"
+            $deleteWorkflowUri = "$JiraBaseUrl/rest/api/3/workflow/$($workflow.WorkflowId)"
+            Invoke-JiraDelete -Uri $deleteWorkflowUri
+        }
+        Write-Host "Selected workflows have been deleted."
+    } else {
+        Write-Host "No workflows were deleted."
+    }
+} else {
+    Write-Host "No unused workflows found."
+}
