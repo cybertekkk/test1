@@ -1,88 +1,100 @@
-# Define Jira credentials and base URL
-$JiraBaseUrl = "https://your-jira-instance.atlassian.net"
-$JiraUsername = "your.email@example.com"
-$JiraApiToken = "your_api_token"  # Replace with your actual API token
+import com.atlassian.jira.component.ComponentAccessor;
+import com.atlassian.jira.bc.workflow.WorkflowSchemeService;
+import com.atlassian.jira.workflow.WorkflowSchemeManager;
+import com.atlassian.jira.workflow.WorkflowManager;
+import com.atlassian.jira.workflow.WorkflowScheme;
+import com.atlassian.jira.workflow.WorkflowException;
+import com.atlassian.jira.project.ProjectManager;
+import groovy.transform.Field;
 
-# Encode credentials for Basic Auth
-$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$JiraUsername:$JiraApiToken"))
+@Field WorkflowManager workflowManager = ComponentAccessor.getWorkflowManager();
+@Field WorkflowSchemeService workflowSchemeService = ComponentAccessor.getComponent(WorkflowSchemeService);
+@Field WorkflowSchemeManager workflowSchemeManager = ComponentAccessor.getWorkflowSchemeManager();
+@Field ProjectManager projectManager = ComponentAccessor.getProjectManager();
 
-# Function to send GET requests to Jira
-function Invoke-JiraGet {
-    param (
-        [string]$Uri
-    )
-    $response = Invoke-RestMethod -Uri $Uri -Method Get -Headers @{
-        Authorization = "Basic $base64AuthInfo"
-        Accept        = "application/json"
-    }
-    return $response
-}
+// Function to delete inactive workflow schemes for a specific project
+def deleteInactiveWorkflowSchemes(String projectKey) {
+    def currentUser = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser();
+    def project = projectManager.getProjectByCurrentKey(projectKey);
 
-# Function to send DELETE requests to Jira
-function Invoke-JiraDelete {
-    param (
-        [string]$Uri
-    )
-    $response = Invoke-RestMethod -Uri $Uri -Method Delete -Headers @{
-        Authorization = "Basic $base64AuthInfo"
-        Accept        = "application/json"
-    }
-    return $response
-}
-
-# Get all workflows in the Jira instance
-$workflowsUri = "$JiraBaseUrl/rest/api/3/workflow/search"
-$workflows = Invoke-JiraGet -Uri $workflowsUri
-
-# Get all workflow schemes in the Jira instance
-$workflowSchemesUri = "$JiraBaseUrl/rest/api/3/workflowscheme"
-$workflowSchemes = Invoke-JiraGet -Uri $workflowSchemesUri
-
-$unusedWorkflows = @()
-
-# Iterate through the workflows to identify inactive or unused ones
-foreach ($workflow in $workflows.values) {
-    $workflowId = $workflow.id
-    $workflowName = $workflow.name
-    $isUsed = $false
-    $isActive = $workflow.active # Check the active status of the workflow
-
-    # Check if the workflow is associated with any workflow schemes
-    foreach ($scheme in $workflowSchemes.values) {
-        if ($scheme.workflows | Where-Object { $_.workflowName -eq $workflowName }) {
-            $isUsed = $true
-            break
-        }
+    if (project == null) {
+        log.error("Project with key $projectKey not found.");
+        return;
     }
 
-    # If the workflow is not used in any scheme and is not active, add it to the unused list
-    if (-not $isUsed -and -not $isActive) {
-        $unusedWorkflows += [PSCustomObject]@{
-            WorkflowId = $workflowId
-            WorkflowName = $workflowName
-            IsActive = $isActive
-        }
-    }
-}
+    def workflowScheme = workflowSchemeManager.getWorkflowScheme(project);
 
-# Display unused workflows for review
-if ($unusedWorkflows.Count -gt 0) {
-    Write-Host "The following workflows are inactive and unused, and can be removed:"
-    $unusedWorkflows | ForEach-Object {
-        Write-Host "$($_.WorkflowId) - $($_.WorkflowName) (Active: $($_.IsActive))"
+    if (workflowScheme == null) {
+        log.warn("No workflow scheme associated with project $projectKey.");
+        return;
     }
 
-    $confirmation = Read-Host "Do you want to delete these workflows? (yes/no)"
-    if ($confirmation -eq "yes") {
-        foreach ($workflow in $unusedWorkflows) {
-            Write-Host "Deleting workflow: $($workflow.WorkflowName)"
-            $deleteWorkflowUri = "$JiraBaseUrl/rest/api/3/workflow/$($workflow.WorkflowId)"
-            Invoke-JiraDelete -Uri $deleteWorkflowUri
-        }
-        Write-Host "Selected workflows have been deleted."
+    // Check if the scheme is inactive and delete if necessary
+    if (!workflowSchemeService.isActive(workflowScheme)) {
+        log.warn("Deleting inactive workflow scheme for project: $projectKey");
+        workflowSchemeService.deleteWorkflowScheme(currentUser, workflowScheme);
     } else {
-        Write-Host "No workflows were deleted."
+        log.info("Workflow scheme for project $projectKey is active.");
     }
-} else {
-    Write-Host "No inactive or unused workflows found."
 }
+
+// Function to delete inactive workflows associated with a specific project
+def deleteInactiveWorkflows(String projectKey) {
+    def project = projectManager.getProjectByCurrentKey(projectKey);
+
+    if (project == null) {
+        log.error("Project with key $projectKey not found.");
+        return;
+    }
+
+    def workflowScheme = workflowSchemeManager.getWorkflowScheme(project);
+
+    if (workflowScheme == null) {
+        log.warn("No workflow scheme associated with project $projectKey.");
+        return;
+    }
+
+    def activeWorkflows = workflowManager.getActiveWorkflows();
+    def allWorkflows = workflowManager.getWorkflows();
+
+    // Get workflows linked to the scheme for this project
+    def workflowsInScheme = workflowScheme.getMappings().collect { it.value }.toSet();
+
+    // Find inactive workflows related to the project
+    def inactiveWorkflows = workflowsInScheme.findAll { workflowName ->
+        def workflow = workflowManager.getWorkflow(workflowName);
+        workflow && !(workflow in activeWorkflows);
+    };
+
+    def counter = 0;
+    inactiveWorkflows.each { workflowName ->
+        def workflow = workflowManager.getWorkflow(workflowName);
+        try {
+            workflowManager.deleteWorkflow(workflow);
+            counter++;
+            log.warn("Deleted inactive workflow: ${workflow.getDisplayName()} for project $projectKey");
+        } catch (WorkflowException e) {
+            log.error("Unable to delete workflow: ${workflow.getDisplayName()}");
+            log.error("${e.getMessage()}");
+        }
+    }
+
+    log.warn("Deleted $counter inactive workflows for project $projectKey");
+}
+
+// Main function to delete inactive workflow schemes and workflows for a specific project key
+def deleteProjectWorkflows(String projectKey) {
+    log.info("Starting deletion process for project: $projectKey");
+
+    // Delete inactive workflow schemes for the specific project
+    deleteInactiveWorkflowSchemes(projectKey);
+
+    // Delete inactive workflows for the specific project
+    deleteInactiveWorkflows(projectKey);
+
+    log.info("Finished deletion process for project: $projectKey");
+}
+
+// Specify the project key for which you want to delete workflows
+def projectKey = "PROJECTKEY";  // Replace with your project key
+deleteProjectWorkflows(projectKey);
