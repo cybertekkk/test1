@@ -31,7 +31,7 @@ function Invoke-JiraDelete {
 }
 
 # Get all workflows in the Jira instance
-$workflowsUri = "$JiraBaseUrl/rest/api/3/workflow"
+$workflowsUri = "$JiraBaseUrl/rest/api/3/workflow/search"
 $workflows = Invoke-JiraGet -Uri $workflowsUri
 
 # Get all workflow schemes in the Jira instance
@@ -40,11 +40,12 @@ $workflowSchemes = Invoke-JiraGet -Uri $workflowSchemesUri
 
 $unusedWorkflows = @()
 
-# Iterate through the workflows to identify unused ones
-foreach ($workflow in $workflows) {
+# Iterate through the workflows to identify inactive or unused ones
+foreach ($workflow in $workflows.values) {
     $workflowId = $workflow.id
     $workflowName = $workflow.name
     $isUsed = $false
+    $isActive = $workflow.active # Check the active status of the workflow
 
     # Check if the workflow is associated with any workflow schemes
     foreach ($scheme in $workflowSchemes.values) {
@@ -54,19 +55,21 @@ foreach ($workflow in $workflows) {
         }
     }
 
-    if (-not $isUsed) {
+    # If the workflow is not used in any scheme and is not active, add it to the unused list
+    if (-not $isUsed -and -not $isActive) {
         $unusedWorkflows += [PSCustomObject]@{
             WorkflowId = $workflowId
             WorkflowName = $workflowName
+            IsActive = $isActive
         }
     }
 }
 
 # Display unused workflows for review
 if ($unusedWorkflows.Count -gt 0) {
-    Write-Host "The following workflows are unused and can be removed:"
+    Write-Host "The following workflows are inactive and unused, and can be removed:"
     $unusedWorkflows | ForEach-Object {
-        Write-Host "$($_.WorkflowId) - $($_.WorkflowName)"
+        Write-Host "$($_.WorkflowId) - $($_.WorkflowName) (Active: $($_.IsActive))"
     }
 
     $confirmation = Read-Host "Do you want to delete these workflows? (yes/no)"
@@ -81,5 +84,5 @@ if ($unusedWorkflows.Count -gt 0) {
         Write-Host "No workflows were deleted."
     }
 } else {
-    Write-Host "No unused workflows found."
+    Write-Host "No inactive or unused workflows found."
 }
