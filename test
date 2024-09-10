@@ -4,17 +4,40 @@ import com.atlassian.jira.workflow.WorkflowSchemeManager;
 import com.atlassian.jira.workflow.WorkflowManager;
 import com.atlassian.jira.workflow.WorkflowScheme;
 import com.atlassian.jira.workflow.WorkflowException;
+import com.atlassian.jira.issue.fields.Screen;
+import com.atlassian.jira.issue.fields.ScreenScheme;
+import com.atlassian.jira.issue.fields.ScreenManager;
+import com.atlassian.jira.issue.fields.ScreenSchemeManager;
+import com.atlassian.jira.issue.fields.ScreenSchemeService;
+import com.atlassian.jira.issue.fields.ScreenSchemeManager;
+import com.atlassian.jira.issue.fields.ScreenSchemeService;
+import com.atlassian.jira.issue.fields.ScreenSchemeManager;
 
 import groovy.transform.Field;
 
-@Field WorkflowManager workflowManager = ComponentAccessor.getWorkflowManager()
+@Field WorkflowManager workflowManager = ComponentAccessor.getWorkflowManager();
 @Field WorkflowSchemeService workflowSchemeService = ComponentAccessor.getComponent(WorkflowSchemeService);
 @Field WorkflowSchemeManager workflowSchemeManager = ComponentAccessor.getWorkflowSchemeManager();
+@Field ScreenManager screenManager = ComponentAccessor.getScreenManager();
+@Field ScreenSchemeManager screenSchemeManager = ComponentAccessor.getScreenSchemeManager();
+@Field ScreenSchemeService screenSchemeService = ComponentAccessor.getComponent(ScreenSchemeService);
 
 // Function to check if a workflow is a system workflow
 def isSystemWorkflow(workflow) {
-    def systemWorkflowNames = ['jira', 'system', 'Default Workflow']  // Add more system workflow names as needed
-    return systemWorkflowNames.any { workflow.getName().contains(it) }
+    def systemWorkflowNames = ['jira', 'system', 'Default Workflow'];  // Add more system workflow names as needed
+    return systemWorkflowNames.any { workflow.getName().contains(it) };
+}
+
+// Function to check if a screen is a system screen
+def isSystemScreen(screen) {
+    def systemScreenNames = ['Default Screen', 'System Screen'];  // Add more system screen names as needed
+    return systemScreenNames.any { screen.getName().contains(it) };
+}
+
+// Function to check if a screen scheme is a system screen scheme
+def isSystemScreenScheme(screenScheme) {
+    def systemScreenSchemeNames = ['Default Screen Scheme', 'System Screen Scheme'];  // Add more system screen scheme names as needed
+    return systemScreenSchemeNames.any { screenScheme.getName().contains(it) };
 }
 
 // Delete all inactive Workflow Schemes
@@ -58,6 +81,51 @@ def deleteInactiveWorkflows() {
     log.warn("Deleted $counter inactive workflows")
 }
 
-// First delete the inactive schemes, then delete the inactive workflows
+// Delete all inactive Screens
+def deleteInactiveScreens() {
+    def activeScreenSchemes = screenSchemeManager.getAllScreenSchemes();
+    def allScreens = screenManager.getAllScreens();
+    def screensInSchemes = activeScreenSchemes.collect { it.getScreens() }.flatten().unique();
+    
+    def inactiveScreens = allScreens.findAll { !(it in screensInSchemes) && !isSystemScreen(it) };
+
+    def counter = 0;
+    inactiveScreens.each { screen ->
+        try {
+            screenManager.deleteScreen(screen);
+            counter++;
+            log.warn("Deleted inactive screen: ${screen.getName()}")
+        } catch (Exception e) {
+            log.error("Unable to delete screen: ${screen.getName()}")
+            log.error("${e.getMessage()}")
+        }
+    }
+    log.warn("Deleted $counter inactive screens")
+}
+
+// Delete all inactive Screen Schemes
+def deleteInactiveScreenSchemes() {
+    def allScreenSchemes = screenSchemeManager.getAllScreenSchemes();
+    def usedScreenSchemes = screenManager.getAllScreens().collect { it.getScreenScheme() }.unique();
+
+    def inactiveScreenSchemes = allScreenSchemes.findAll { !(it in usedScreenSchemes) && !isSystemScreenScheme(it) };
+
+    def counter = 0;
+    inactiveScreenSchemes.each { screenScheme ->
+        try {
+            screenSchemeManager.deleteScreenScheme(screenScheme);
+            counter++;
+            log.warn("Deleted inactive screen scheme: ${screenScheme.getName()}")
+        } catch (Exception e) {
+            log.error("Unable to delete screen scheme: ${screenScheme.getName()}")
+            log.error("${e.getMessage()}")
+        }
+    }
+    log.warn("Deleted $counter inactive screen schemes")
+}
+
+// First delete the inactive schemes, then delete the inactive workflows, screens, and screen schemes
 deleteInactiveWorkflowSchemes();
 deleteInactiveWorkflows();
+deleteInactiveScreens();
+deleteInactiveScreenSchemes();
